@@ -21,10 +21,11 @@ export async function connectToMongoDB() {
     }
 }
 
-connectToMongoDB();
+const connectClient = await connectToMongoDB();
+const db = connectClient.db("studio-space");
 
-app.get("/test", (req, res) => {
-    res.json({ message: "Test endpoint is working" });
+app.get("/", (req, res) => {
+    res.send("Studio Space Server is working");
 });
 
 app.listen(PORT, () => {
