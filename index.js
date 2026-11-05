@@ -117,12 +117,10 @@ async function run() {
                 const updatedData = req.body;
 
                 if (!ObjectId.isValid(id)) {
-                    return res
-                        .status(400)
-                        .send({
-                            success: false,
-                            message: "Invalid Studio ID format",
-                        });
+                    return res.status(400).send({
+                        success: false,
+                        message: "Invalid Studio ID format",
+                    });
                 }
 
                 const filter = { _id: new ObjectId(id) };
@@ -164,7 +162,38 @@ async function run() {
                 });
             }
         });
-        
+
+        // DELETE: Remove studio listing (/my-listings context)
+        app.delete("/studios/:id", async (req, res) => {
+            try {
+                const id = req.params.id;
+
+                if (!ObjectId.isValid(id)) {
+                    return res
+                        .status(400)
+                        .send({
+                            success: false,
+                            message: "Invalid Studio ID format",
+                        });
+                }
+
+                const result = await studiosCollection.deleteOne({
+                    _id: new ObjectId(id),
+                });
+                if (result.deletedCount === 0) {
+                    return res
+                        .status(404)
+                        .send({ success: false, message: "Listing not found" });
+                }
+
+                res.send({ success: true, deletedCount: result.deletedCount });
+            } catch (error) {
+                res.status(500).send({
+                    success: false,
+                    message: error.message,
+                });
+            }
+        });
     } catch (error) {
         console.error("Database connection error:", error);
     }
