@@ -20,6 +20,8 @@ async function run() {
         const studiosCollection = db.collection("studios");
         const bookingsCollection = db.collection("bookings");
 
+        // 1. STUDIO ROUTES
+
         // POST: Create a new Studio Listing (/add-studio context)
         app.post("/studios", async (req, res) => {
             try {
@@ -169,12 +171,10 @@ async function run() {
                 const id = req.params.id;
 
                 if (!ObjectId.isValid(id)) {
-                    return res
-                        .status(400)
-                        .send({
-                            success: false,
-                            message: "Invalid Studio ID format",
-                        });
+                    return res.status(400).send({
+                        success: false,
+                        message: "Invalid Studio ID format",
+                    });
                 }
 
                 const result = await studiosCollection.deleteOne({
@@ -187,6 +187,39 @@ async function run() {
                 }
 
                 res.send({ success: true, deletedCount: result.deletedCount });
+            } catch (error) {
+                res.status(500).send({
+                    success: false,
+                    message: error.message,
+                });
+            }
+        });
+
+        // 2. BOOKING ROUTES
+
+        // POST: Reserve a studio slot
+        app.post("/bookings", async (req, res) => {
+            try {
+                const bookingData = req.body;
+
+                const newBooking = {
+                    studioId: bookingData.studioId,
+                    studioTitle: bookingData.studioTitle,
+                    imageUrl: bookingData.imageUrl,
+                    userEmail: bookingData.userEmail,
+                    userName: bookingData.userName,
+                    hostEmail: bookingData.hostEmail,
+                    bookingDate: bookingData.bookingDate,
+                    totalPrice: parseFloat(bookingData.totalPrice),
+                    status: "Pending", // Pending, Confirmed, Completed, Cancelled
+                    createdAt: new Date(),
+                };
+
+                const result = await bookingsCollection.insertOne(newBooking);
+                res.status(201).send({
+                    success: true,
+                    insertedId: result.insertedId,
+                });
             } catch (error) {
                 res.status(500).send({
                     success: false,
