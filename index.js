@@ -227,6 +227,31 @@ async function run() {
                 });
             }
         });
+
+        // GET: User specific bookings (/my-bookings)
+        app.get("/bookings", async (req, res) => {
+            try {
+                const email = req.query.email;
+                if (!email) {
+                    return res
+                        .status(400)
+                        .send({
+                            success: false,
+                            message: "Email query param required",
+                        });
+                }
+
+                const bookings = await bookingsCollection
+                    .find({ userEmail: email })
+                    .toArray();
+                res.send(bookings);
+            } catch (error) {
+                res.status(500).send({
+                    success: false,
+                    message: error.message,
+                });
+            }
+        });
     } catch (error) {
         console.error("Database connection error:", error);
     }
