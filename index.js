@@ -53,7 +53,62 @@ async function run() {
                     success: false,
                     message: error.message,
                 });
-                
+            }
+        });
+
+        // GET: Retrieve all studios (Supports filtering by ownerEmail or search query)
+        app.get("/studios", async (req, res) => {
+            try {
+                const { ownerEmail, category } = req.query;
+                let query = {};
+
+                if (ownerEmail) {
+                    query.ownerEmail = ownerEmail;
+                }
+
+                if (category) {
+                    query.category = category;
+                }
+
+                const studios = await studiosCollection.find(query).toArray();
+                res.send(studios);
+            } catch (error) {
+                res.status(500).send({
+                    success: false,
+                    message: error.message,
+                });
+            }
+        });
+        
+        // GET: Single studio details by ID (/studios/[id])
+        app.get("/studios/:id", async (req, res) => {
+            try {
+                const id = req.params.id;
+
+                if (!ObjectId.isValid(id)) {
+                    return res
+                        .status(400)
+                        .send({
+                            success: false,
+                            message: "Invalid Studio ID format",
+                        });
+                }
+
+                const studio = await studiosCollection.findOne({
+                    _id: new ObjectId(id),
+                });
+                if (!studio) {
+                    return res
+                        .status(404)
+                        .send({ success: false, message: "Studio not found" });
+                }
+
+                res.send(studio);
+            } catch (error) {
+                res.status(500).send({
+                    success: false,
+                    message: error.message,
+                });
             }
         });
     } catch (error) {
