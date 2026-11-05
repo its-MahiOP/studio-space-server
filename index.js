@@ -233,12 +233,10 @@ async function run() {
             try {
                 const email = req.query.email;
                 if (!email) {
-                    return res
-                        .status(400)
-                        .send({
-                            success: false,
-                            message: "Email query param required",
-                        });
+                    return res.status(400).send({
+                        success: false,
+                        message: "Email query param required",
+                    });
                 }
 
                 const bookings = await bookingsCollection
@@ -252,6 +250,43 @@ async function run() {
                 });
             }
         });
+
+        // PATCH: Cancel/Update booking status
+        app.patch("/bookings/:id", async (req, res) => {
+            try {
+                const id = req.params.id;
+                const { status } = req.body;
+
+                if (!ObjectId.isValid(id)) {
+                    return res
+                        .status(400)
+                        .send({
+                            success: false,
+                            message: "Invalid Booking ID",
+                        });
+                }
+
+                const filter = { _id: new ObjectId(id) };
+                const updateDoc = {
+                    $set: { status: status },
+                };
+
+                const result = await bookingsCollection.updateOne(
+                    filter,
+                    updateDoc,
+                );
+                res.send({
+                    success: true,
+                    modifiedCount: result.modifiedCount,
+                });
+            } catch (error) {
+                res.status(500).send({
+                    success: false,
+                    message: error.message,
+                });
+            }
+        });
+        
     } catch (error) {
         console.error("Database connection error:", error);
     }
