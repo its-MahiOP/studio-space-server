@@ -79,19 +79,17 @@ async function run() {
                 });
             }
         });
-        
+
         // GET: Single studio details by ID (/studios/[id])
         app.get("/studios/:id", async (req, res) => {
             try {
                 const id = req.params.id;
 
                 if (!ObjectId.isValid(id)) {
-                    return res
-                        .status(400)
-                        .send({
-                            success: false,
-                            message: "Invalid Studio ID format",
-                        });
+                    return res.status(400).send({
+                        success: false,
+                        message: "Invalid Studio ID format",
+                    });
                 }
 
                 const studio = await studiosCollection.findOne({
@@ -111,6 +109,62 @@ async function run() {
                 });
             }
         });
+
+        // PUT: Update studio listing (/studios/edit/[id])
+        app.put("/studios/:id", async (req, res) => {
+            try {
+                const id = req.params.id;
+                const updatedData = req.body;
+
+                if (!ObjectId.isValid(id)) {
+                    return res
+                        .status(400)
+                        .send({
+                            success: false,
+                            message: "Invalid Studio ID format",
+                        });
+                }
+
+                const filter = { _id: new ObjectId(id) };
+                const updateDoc = {
+                    $set: {
+                        title: updatedData.title,
+                        category: updatedData.category,
+                        hourlyRate: parseFloat(updatedData.hourlyRate),
+                        securityDeposit: parseFloat(
+                            updatedData.securityDeposit || 0,
+                        ),
+                        maxCapacity: parseInt(updatedData.maxCapacity, 10),
+                        location: updatedData.location,
+                        imageUrl: updatedData.imageUrl,
+                        amenities: updatedData.amenities,
+                        overview: updatedData.overview,
+                        updatedAt: new Date(),
+                    },
+                };
+
+                const result = await studiosCollection.updateOne(
+                    filter,
+                    updateDoc,
+                );
+                if (result.matchedCount === 0) {
+                    return res
+                        .status(404)
+                        .send({ success: false, message: "Listing not found" });
+                }
+
+                res.send({
+                    success: true,
+                    modifiedCount: result.modifiedCount,
+                });
+            } catch (error) {
+                res.status(500).send({
+                    success: false,
+                    message: error.message,
+                });
+            }
+        });
+        
     } catch (error) {
         console.error("Database connection error:", error);
     }
