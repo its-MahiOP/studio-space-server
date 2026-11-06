@@ -119,6 +119,37 @@ async function requireAuth(req, res, next) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Challenge 2 — double-booking prevention helpers.
+//
+// A reservation is the window [startsAt, endsAt). Two windows on the SAME
+// studio collide when `existing.startsAt < new.endsAt` and
+// `existing.endsAt > new.startsAt` — open intervals, so back-to-back slots
+// (14:00–16:00 then 16:00–18:00) are allowed while any overlap is rejected.
+// Only "Confirmed" reservations hold a room, per the requirement.
+// ---------------------------------------------------------------------------
+const HOUR_MS = 60 * 60 * 1000;
+
+/** Builds a booking window from "YYYY-MM-DDTHH:MM" + duration (default 1h). */
+function parseBookingWindow(bookingDate, durationHours) {
+    const startsAt = new Date(bookingDate);
+    if (Number.isNaN(startsAt.getTime())) return null;
+    const hours = Math.min(Math.max(parseInt(durationHours, 10) || 1, 1), 24);
+    return {
+        startsAt,
+        endsAt: new Date(startsAt.getTime() + hours * HOUR_MS),
+        hours,
+    };
+}
+
+/** Human-readable slot for error messages, e.g. "10:00–14:00 on 2027-05-10". */
+function formatSlot({ startsAt, endsAt }) {
+    const pad = (value) => String(value).padStart(2, "0");
+    const clock = (date) => `${pad(date.getHours())}:${pad(date.getMinutes())}`;
+    const day = `${startsAt.getFullYear()}-${pad(startsAt.getMonth() + 1)}-${pad(startsAt.getDate())}`;
+    return `${clock(startsAt)}–${clock(endsAt)} on ${day}`;
+}
+
 const client = new MongoClient(process.env.MONGO_URI);
 
 async function run() {
@@ -353,6 +384,9 @@ async function run() {
         // POST: Reserve a studio slot
         // Challenge 1: requires a valid JWT; the guest identity is taken from
         // the token so a caller can never impersonate another user.
+        // Challenge 2: the requested window is verified against existing
+        // "Confirmed" reservations before it is saved; overlapping requests
+        // are rejected with 409 and a clear message.
         app.post("/bookings", requireAuth, async (req, res) => {
             try {
                 const bookingData = req.body ?? {};
@@ -364,14 +398,96 @@ async function run() {
                     });
                 }
 
+                const window = parseBookingWindow(
+                    bookingData.bookingDate,
+                    bookingData.durationHours,
+                );
+                if (!window) {
+                    return res.status(400).send({
+                        success: false,
+                        message: "That date and time doesn't look right.",
+                    });
+                }
+                if (window.startsAt.getTime() < Date.now()) {
+                    return res.status(400).send({
+                        success: false,
+                        message: "Pick a start time in the future.",
+                    });
+                }
+
+                const studioId = String(bookingData.studioId);
+                const day = String(bookingData.bookingDate).slice(0, 10);
+
+                // (a) Normalized bookings: MongoDB does the interval math with
+                //     range operators — start before my end AND end after my start.
+                const confirmed = await bookingsCollection.findOne({
+                    studioId,
+                    status: "Confirmed",
+                    $and: [
+                        { startsAt: { $lt: window.endsAt } },
+                        { endsAt: { $gt: window.startsAt } },
+                    ],
+                });
+
+                // (b) Legacy bookings only store the `bookingDate` string, so
+                //     narrow to that day with $gte/$lt and finish the interval
+                //     comparison in code.
+                let conflictWindow = null;
+                if (confirmed) {
+                    conflictWindow = {
+                        startsAt: confirmed.startsAt,
+                        endsAt: confirmed.endsAt,
+                    };
+                } else {
+                    const legacy = await bookingsCollection
+                        .find({
+                            studioId,
+                            status: "Confirmed",
+                            startsAt: { $exists: false },
+                            bookingDate: {
+                                $gte: `${day}T00:00`,
+                                $lt: `${day}T24:00`,
+                            },
+                        })
+                        .toArray();
+
+                    for (const booking of legacy) {
+                        const legacyWindow = parseBookingWindow(
+                            booking.bookingDate,
+                            booking.durationHours,
+                        );
+                        if (!legacyWindow) continue;
+                        if (
+                            legacyWindow.startsAt < window.endsAt &&
+                            legacyWindow.endsAt > window.startsAt
+                        ) {
+                            conflictWindow = legacyWindow;
+                            break;
+                        }
+                    }
+                }
+
+                if (conflictWindow) {
+                    const studioLabel =
+                        String(bookingData.studioTitle || "").trim() ||
+                        "This studio";
+                    return res.status(409).send({
+                        success: false,
+                        message: `That slot is already taken — ${studioLabel} has a confirmed booking from ${formatSlot(conflictWindow)}. Choose another time.`,
+                    });
+                }
+
                 const newBooking = {
-                    studioId: String(bookingData.studioId),
+                    studioId,
                     studioTitle: String(bookingData.studioTitle ?? ""),
                     imageUrl: String(bookingData.imageUrl ?? ""),
                     hostEmail: String(bookingData.hostEmail ?? ""),
                     userEmail: req.auth.email,
                     userName: req.auth.name ?? "",
                     bookingDate: String(bookingData.bookingDate),
+                    durationHours: window.hours,
+                    startsAt: window.startsAt,
+                    endsAt: window.endsAt,
                     totalPrice: parseFloat(bookingData.totalPrice) || 0,
                     status: "Pending", // Pending, Confirmed, Completed, Cancelled
                     createdAt: new Date(),
