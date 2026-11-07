@@ -49,8 +49,7 @@ app.use((req, _res, next) => {
 // missing, malformed, tampered with or expired with 401 Unauthorized.
 // ---------------------------------------------------------------------------
 const API_TOKEN_COOKIE = "studiospace_token";
-const JWKS_URL =
-    process.env.AUTH_JWKS_URL || "http://localhost:3000/api/auth/jwks";
+const JWKS_URL = `${process.env.AUTH_JWKS_URL}/api/auth/jwks`;
 
 /** kid -> crypto.KeyObject, refreshed whenever an unknown kid shows up. */
 const signingKeys = new Map();
@@ -213,10 +212,7 @@ async function ensureIndexes(db) {
         db.collection("bookings").createIndex({ studioId: 1, status: 1 }),
         db
             .collection("wishlists")
-            .createIndex(
-                { userEmail: 1, studioId: 1 },
-                { unique: true },
-            ),
+            .createIndex({ userEmail: 1, studioId: 1 }, { unique: true }),
     ]);
 }
 
@@ -420,7 +416,10 @@ app.put("/studios/:id", requireAuth, async (req, res) => {
                 location: updatedData.location,
                 imageUrl: updatedData.imageUrl,
                 images: Array.isArray(updatedData.images)
-                    ? updatedData.images.map(String).filter(Boolean).slice(0, 12)
+                    ? updatedData.images
+                          .map(String)
+                          .filter(Boolean)
+                          .slice(0, 12)
                     : [],
                 amenities: updatedData.amenities,
                 overview: updatedData.overview,
@@ -604,7 +603,7 @@ app.post("/studios/:id/reviews", requireAuth, async (req, res) => {
             .toArray();
         const newRating = stats
             ? Math.round(stats.average * 10) / 10
-            : studio.rating ?? 0;
+            : (studio.rating ?? 0);
         const reviewCount = stats ? stats.count : 0;
 
         await studiosCollection.updateOne(
@@ -716,8 +715,7 @@ app.post("/bookings", requireAuth, async (req, res) => {
 
         if (conflictWindow) {
             const studioLabel =
-                String(bookingData.studioTitle || "").trim() ||
-                "This studio";
+                String(bookingData.studioTitle || "").trim() || "This studio";
             return res.status(409).send({
                 success: false,
                 message: `That slot is already taken — ${studioLabel} has a confirmed booking from ${formatSlot(conflictWindow)}. Choose another time.`,
@@ -815,10 +813,7 @@ app.patch("/bookings/:id", requireAuth, async (req, res) => {
                 .send({ success: false, message: "Booking not found" });
         }
         const caller = req.auth.email;
-        if (
-            booking.userEmail !== caller &&
-            booking.hostEmail !== caller
-        ) {
+        if (booking.userEmail !== caller && booking.hostEmail !== caller) {
             return res.status(403).send({
                 success: false,
                 message: "You can only update your own reservations.",
@@ -830,10 +825,7 @@ app.patch("/bookings/:id", requireAuth, async (req, res) => {
             $set: { status: status },
         };
 
-        const result = await bookingsCollection.updateOne(
-            filter,
-            updateDoc,
-        );
+        const result = await bookingsCollection.updateOne(filter, updateDoc);
         res.send({
             success: true,
             modifiedCount: result.modifiedCount,
