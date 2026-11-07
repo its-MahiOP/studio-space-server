@@ -180,9 +180,13 @@ let dbPromise = null;
 
 function getDb() {
     if (!dbPromise) {
-        dbPromise = client.connect().then((connected) => {
+        dbPromise = client.connect().then(async (connected) => {
             console.log("Connected to MongoDB successfully!");
-            return connected.db("studio-space");
+            const db = connected.db("studio-space");
+            await ensureIndexes(db).catch((error) => {
+                console.warn("Index setup skipped:", error.message);
+            });
+            return db;
         });
         // Drop the cache on failure so the next request retries the connect.
         dbPromise.catch(() => {
@@ -200,6 +204,20 @@ async function collections() {
         reviews: db.collection("reviews"),
         wishlists: db.collection("wishlists"),
     };
+}
+
+/** Best-effort secondary indexes; never blocks requests if they fail. */
+async function ensureIndexes(db) {
+    await Promise.all([
+        db.collection("reviews").createIndex({ studioId: 1, createdAt: -1 }),
+        db.collection("bookings").createIndex({ studioId: 1, status: 1 }),
+        db
+            .collection("wishlists")
+            .createIndex(
+                { userEmail: 1, studioId: 1 },
+                { unique: true },
+            ),
+    ]);
 }
 
 // ---------------------------------------------------------------------------
@@ -476,7 +494,138 @@ app.delete("/studios/:id", requireAuth, async (req, res) => {
     }
 });
 
-// 2. BOOKING ROUTES
+// 2. REVIEW ROUTES
+
+// GET: Public list of reviews for a studio, newest first.
+app.get("/studios/:id/reviews", async (req, res) => {
+    try {
+        const { reviews: reviewsCollection } = await collections();
+        const id = req.params.id;
+
+        if (!ObjectId.isValid(id)) {
+            return res.status(400).send({
+                success: false,
+                message: "Invalid Studio ID format",
+            });
+        }
+
+        const reviews = await reviewsCollection
+            .find({ studioId: id })
+            .sort({ createdAt: -1 })
+            .toArray();
+        res.send(reviews);
+    } catch (error) {
+        res.status(500).send({
+            success: false,
+            message: error.message,
+        });
+    }
+});
+
+// POST: Leave a review (or update your existing one — one per creator per
+// studio). Challenge 1: requires a valid JWT; identity comes from the token,
+// and hosts can't review their own listings. The studio's aggregate rating is
+// recomputed from the reviews collection in the same request.
+app.post("/studios/:id/reviews", requireAuth, async (req, res) => {
+    try {
+        const { reviews: reviewsCollection, studios: studiosCollection } =
+            await collections();
+        const id = req.params.id;
+        const body = req.body ?? {};
+
+        if (!ObjectId.isValid(id)) {
+            return res.status(400).send({
+                success: false,
+                message: "Invalid Studio ID format",
+            });
+        }
+
+        const rating = parseInt(body.rating, 10);
+        const comment = String(body.comment ?? "").trim();
+        if (!Number.isFinite(rating) || rating < 1 || rating > 5) {
+            return res.status(400).send({
+                success: false,
+                message: "Pick a rating between 1 and 5 stars.",
+            });
+        }
+        if (comment.length < 3) {
+            return res.status(400).send({
+                success: false,
+                message: "Write a few words about the room.",
+            });
+        }
+
+        const studio = await studiosCollection.findOne({
+            _id: new ObjectId(id),
+        });
+        if (!studio) {
+            return res
+                .status(404)
+                .send({ success: false, message: "Studio not found" });
+        }
+        if (studio.ownerEmail === req.auth.email) {
+            return res.status(403).send({
+                success: false,
+                message: "You can't review your own listing.",
+            });
+        }
+
+        await reviewsCollection.updateOne(
+            { studioId: id, userEmail: req.auth.email },
+            {
+                $set: {
+                    studioTitle: studio.title,
+                    userName: req.auth.name ?? "",
+                    rating,
+                    comment: comment.slice(0, 2000),
+                    updatedAt: new Date(),
+                },
+                $setOnInsert: {
+                    studioId: id,
+                    userEmail: req.auth.email,
+                    createdAt: new Date(),
+                },
+            },
+            { upsert: true },
+        );
+
+        // Recompute the aggregate rating shown across the site.
+        const [stats] = await reviewsCollection
+            .aggregate([
+                { $match: { studioId: id } },
+                {
+                    $group: {
+                        _id: "$studioId",
+                        average: { $avg: "$rating" },
+                        count: { $sum: 1 },
+                    },
+                },
+            ])
+            .toArray();
+        const newRating = stats
+            ? Math.round(stats.average * 10) / 10
+            : studio.rating ?? 0;
+        const reviewCount = stats ? stats.count : 0;
+
+        await studiosCollection.updateOne(
+            { _id: new ObjectId(id) },
+            { $set: { rating: newRating, reviewCount } },
+        );
+
+        res.status(201).send({
+            success: true,
+            rating: newRating,
+            reviewCount,
+        });
+    } catch (error) {
+        res.status(500).send({
+            success: false,
+            message: error.message,
+        });
+    }
+});
+
+// 3. BOOKING ROUTES
 
 // POST: Reserve a studio slot
 // Challenge 1: requires a valid JWT; the guest identity is taken from
@@ -688,6 +837,116 @@ app.patch("/bookings/:id", requireAuth, async (req, res) => {
         res.send({
             success: true,
             modifiedCount: result.modifiedCount,
+        });
+    } catch (error) {
+        res.status(500).send({
+            success: false,
+            message: error.message,
+        });
+    }
+});
+
+// 4. WISHLIST ROUTES (optional: saved studios)
+
+// GET: Studio ids a creator has saved, newest first.
+app.get("/wishlist", async (req, res) => {
+    try {
+        const { wishlists: wishlistsCollection } = await collections();
+        const email = req.query.email;
+        if (!email) {
+            return res.status(400).send({
+                success: false,
+                message: "Email query param required",
+            });
+        }
+
+        const items = await wishlistsCollection
+            .find({ userEmail: email })
+            .sort({ createdAt: -1 })
+            .toArray();
+        res.send(items);
+    } catch (error) {
+        res.status(500).send({
+            success: false,
+            message: error.message,
+        });
+    }
+});
+
+// POST: Save a studio to the caller's wishlist.
+// Challenge 1: requires a valid JWT; the owner email comes from the token.
+app.post("/wishlist", requireAuth, async (req, res) => {
+    try {
+        const { wishlists: wishlistsCollection, studios: studiosCollection } =
+            await collections();
+        const studioId = String(req.body?.studioId ?? "");
+
+        if (!ObjectId.isValid(studioId)) {
+            return res.status(400).send({
+                success: false,
+                message: "Invalid Studio ID format",
+            });
+        }
+
+        const studio = await studiosCollection.findOne({
+            _id: new ObjectId(studioId),
+        });
+        if (!studio) {
+            return res
+                .status(404)
+                .send({ success: false, message: "Studio not found" });
+        }
+
+        try {
+            await wishlistsCollection.updateOne(
+                { userEmail: req.auth.email, studioId },
+                {
+                    $set: {
+                        userEmail: req.auth.email,
+                        studioId,
+                        studioTitle: studio.title,
+                        imageUrl: studio.imageUrl,
+                        createdAt: new Date(),
+                    },
+                },
+                { upsert: true },
+            );
+        } catch (error) {
+            // Duplicate key = a concurrent save already won; still a success.
+            if (error?.code !== 11000) throw error;
+        }
+
+        res.status(201).send({ success: true, saved: true });
+    } catch (error) {
+        res.status(500).send({
+            success: false,
+            message: error.message,
+        });
+    }
+});
+
+// DELETE: Remove a studio from the caller's wishlist.
+// Challenge 1: requires a valid JWT; only the caller's own row is removed.
+app.delete("/wishlist/:studioId", requireAuth, async (req, res) => {
+    try {
+        const { wishlists: wishlistsCollection } = await collections();
+        const studioId = req.params.studioId;
+
+        if (!ObjectId.isValid(studioId)) {
+            return res.status(400).send({
+                success: false,
+                message: "Invalid Studio ID format",
+            });
+        }
+
+        const result = await wishlistsCollection.deleteOne({
+            userEmail: req.auth.email,
+            studioId,
+        });
+        res.send({
+            success: true,
+            deletedCount: result.deletedCount,
+            saved: false,
         });
     } catch (error) {
         res.status(500).send({
